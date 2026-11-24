@@ -19,8 +19,6 @@ CLIENTE TCEGO
 Links
 https://egesp.tce.go.gov.br/portal/
 https://egesp.tce.go.gov.br/srh/
-https://egesphmg.tce.go.gov.br/portal/users/sign_in
-https://egesphmg.tce.go.gov.br/srh
 
 CLIENTE TCMGO
 Links
