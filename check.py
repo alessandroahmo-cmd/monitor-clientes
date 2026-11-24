@@ -61,17 +61,93 @@ def environment_of(url):
     return "Produção"
 
 
-def ssl_expiry(host, port=443):
+CHAIN_ERRORS = {2, 20, 21}   # servidor não enviou o certificado intermediário
+_ctx_cache = {}
+
+
+def _decode_der(der):
+    """Decodifica um certificado DER usando só a biblioteca padrão."""
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".pem", delete=False) as f:
+        f.write(ssl.DER_cert_to_PEM_cert(der))
+        path = f.name
+    try:
+        return ssl._ssl._test_decode_cert(path)  # noqa: SLF001
+    finally:
+        os.unlink(path)
+
+
+def _fetch_der(url):
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        data = resp.read(200_000)
+    if data.lstrip().startswith(b"-----BEGIN"):
+        data = ssl.PEM_cert_to_DER_cert(data.decode())
+    return data
+
+
+def ssl_context(host, port=443):
+    """Contexto SSL que verifica o certificado como um navegador.
+
+    Se o servidor não envia o certificado intermediário (erro comum), baixamos o
+    intermediário pelo endereço indicado no próprio certificado (AIA), igual o
+    Chrome/Edge fazem. Retorna (contexto, cadeia_incompleta)."""
+    if host in _ctx_cache:
+        return _ctx_cache[host]
     ctx = ssl.create_default_context()
     try:
+        with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host):
+                pass
+        _ctx_cache[host] = (ctx, False)
+        return _ctx_cache[host]
+    except ssl.SSLCertVerificationError as e:
+        if e.verify_code not in CHAIN_ERRORS:
+            raise
+    except Exception:  # noqa: BLE001
+        _ctx_cache[host] = (ctx, False)
+        return _ctx_cache[host]
+    # baixa os intermediários (até 3 níveis)
+    raw = ssl.create_default_context()
+    raw.check_hostname = False
+    raw.verify_mode = ssl.CERT_NONE
+    with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
+        with raw.wrap_socket(sock, server_hostname=host) as s:
+            der = s.getpeercert(binary_form=True)
+    extra = []
+    for _ in range(3):
+        urls = [u for u in (_decode_der(der).get("caIssuers") or ()) if u.startswith("http")]
+        if not urls:
+            break
+        der = _fetch_der(urls[0])
+        extra.append(der)
+        fixed = ssl.create_default_context()
+        for c in extra:
+            fixed.load_verify_locations(cadata=c)
+        try:
+            with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
+                with fixed.wrap_socket(sock, server_hostname=host):
+                    pass
+            _ctx_cache[host] = (fixed, True)
+            return _ctx_cache[host]
+        except ssl.SSLCertVerificationError as e:
+            if e.verify_code not in CHAIN_ERRORS:
+                raise
+    raise ssl.SSLCertVerificationError("cadeia de certificados incompleta e não foi possível completá-la")
+
+
+def ssl_expiry(host, port=443):
+    try:
+        ctx, chain_incomplete = ssl_context(host, port)
         with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
             with ctx.wrap_socket(sock, server_hostname=host) as s:
                 cert = s.getpeercert()
         exp = dt.datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=dt.timezone.utc)
         issuer = dict(x[0] for x in cert.get("issuer", ())).get("organizationName", "")
-        return {"valid": True, "expires": exp.isoformat(), "days_left": (exp - dt.datetime.now(dt.timezone.utc)).days, "issuer": issuer}
+        return {"valid": True, "expires": exp.isoformat(), "days_left": (exp - dt.datetime.now(dt.timezone.utc)).days,
+                "issuer": issuer, "chain_incomplete": chain_incomplete}
     except ssl.SSLCertVerificationError as e:
-        return {"valid": False, "error": f"Certificado inválido: {e.verify_message}"}
+        return {"valid": False, "error": f"Certificado inválido: {getattr(e, 'verify_message', '') or e}"}
     except Exception as e:  # noqa: BLE001
         return {"valid": None, "error": str(e)[:150]}
 
@@ -104,7 +180,8 @@ def check(site):
     start = time.monotonic()
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"})
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        ctx = ssl_context(r["host"], urllib.parse.urlparse(url).port or 443)[0] if url.lower().startswith("https://") else None
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=ctx) as resp:
             body = resp.read(300_000).decode(resp.headers.get_content_charset() or "utf-8", "replace")
             r["http"] = resp.status
             r["final_url"] = resp.geturl()
@@ -129,6 +206,9 @@ def check(site):
         else:
             r["error"] = str(reason)[:150]
         body = ""
+    except ssl.SSLCertVerificationError as e:
+        r["error"] = f"Certificado SSL inválido: {getattr(e, 'verify_message', '') or e}"
+        body = ""
     except (socket.timeout, TimeoutError):
         r["error"] = f"Sem resposta em {TIMEOUT}s"
         body = ""
@@ -142,7 +222,7 @@ def check(site):
         r["icon"] = page_icon(body, r.get("final_url") or url)
 
     if url.lower().startswith("https://"):
-        r["ssl"] = ssl_expiry(r["host"])
+        r["ssl"] = ssl_expiry(r["host"], urllib.parse.urlparse(url).port or 443)
 
     # ---- semáforo ----
     reasons, color = [], "green"
@@ -169,7 +249,8 @@ def check(site):
     s = r.get("ssl") or {}
     if s.get("valid") is False:
         color = "red"
-        reasons.append(s.get("error", "Certificado inválido"))
+        if not any("Certificado" in x for x in reasons):
+            reasons.append(s.get("error", "Certificado inválido"))
     elif s.get("days_left") is not None:
         if s["days_left"] < 0:
             color = "red"
@@ -181,6 +262,8 @@ def check(site):
             reasons.append(f"Certificado vence em {s['days_left']} dias")
     r["color"] = color
     r["reasons"] = reasons or ["Funcionando normalmente"]
+    if s.get("chain_incomplete") and color == "green":
+        r["reasons"] = ["Funcionando (servidor não envia o certificado intermediário; navegadores corrigem sozinhos)"]
     return r
 
 
