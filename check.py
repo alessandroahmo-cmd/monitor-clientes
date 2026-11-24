@@ -28,8 +28,8 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 LINKS_FILE = os.path.join(ROOT, "links_clientes.txt")
 OUT_FILE = os.path.join(ROOT, "site", "data", "status.json")
 
-TIMEOUT = 20            # segundos para considerar o site fora
-SLOW_MS = 3000          # acima disso: amarelo (lento)
+TIMEOUT = 30            # segundos para considerar o site fora
+SLOW_MS = 8000          # acima disso: amarelo (lento). O GitHub consulta dos EUA, então tudo fica ~1-3 s mais lento que no Brasil
 SSL_WARN_DAYS = 15      # certificado vencendo em menos de X dias: amarelo
 HISTORY_SIZE = 288      # 288 checagens de 5 min = 24 h
 FAILS_TO_ALERT = 2      # checagens vermelhas seguidas antes de alertar (evita alarme falso)
@@ -105,8 +105,7 @@ def ssl_context(host, port=443):
         if e.verify_code not in CHAIN_ERRORS:
             raise
     except Exception:  # noqa: BLE001
-        _ctx_cache[host] = (ctx, False)
-        return _ctx_cache[host]
+        return ctx, False   # não guarda: na próxima tentativa testa de novo
     # baixa os intermediários (até 3 níveis)
     raw = ssl.create_default_context()
     raw.check_hostname = False
@@ -170,6 +169,17 @@ def page_icon(body, base_url):
 
 
 def check(site):
+    """Consulta o site; se der vermelho, espera 10 s e tenta de novo antes de condenar."""
+    r = _check_once(site)
+    if r["color"] == "red":
+        time.sleep(10)
+        r2 = _check_once(site)
+        r2["retried"] = True
+        return r2
+    return r
+
+
+def _check_once(site):
     url = site["url"]
     r = {
         **site,
@@ -306,7 +316,7 @@ def main():
         sys.exit("Nenhum link encontrado em links_clientes.txt")
     prev = {s["url"]: s for s in load_previous().get("sites", [])}
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
         results = list(pool.map(check, sites))
 
     now = dt.datetime.now(dt.timezone.utc)
