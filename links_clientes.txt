@@ -1,0 +1,33 @@
+CLIENTE DPDF
+Links
+https://egesp.defensoria.df.gov.br/externo
+https://egesp.defensoria.df.gov.br/site
+https://srh.defensoria.df.gov.br
+https://egesphmg.defensoria.df.gov.br/externo
+https://egesphmg.defensoria.df.gov.br/site
+https://srhhmg.defensoria.df.gov.br
+
+CLIENTE TCDF
+Links
+https://egesp.tc.df.gov.br/externo/tb_usuario_externos/sign_in
+https://srh.tc.df.gov.br/
+https://egesphmg.tc.df.gov.br/externo/tb_usuario_externos/sign_in
+https://srhhmg.tc.df.gov.br/
+https://egesphmg.tc.df.gov.br/portal
+
+CLIENTE TCEGO
+Links
+https://egesp.tce.go.gov.br/portal/
+https://egesp.tce.go.gov.br/srh/
+https://egesphmg.tce.go.gov.br/portal/users/sign_in
+https://egesphmg.tce.go.gov.br/srh
+
+CLIENTE TCMGO
+Links
+https://egesp.tcmgo.tc.br/portal
+https://egesp.tcmgo.tc.br/srh
+https://hom.egesp.tcmgo.tc.br/portal
+https://hom.egesp.tcmgo.tc.br/srh/usuarios/sign_in
+
+
+
