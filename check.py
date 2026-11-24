@@ -293,14 +293,22 @@ def load_previous():
 
 
 def telegram(text):
-    token, chat = os.environ.get("TELEGRAM_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+    token, chat = os.environ.get("TELEGRAM_TOKEN", "").strip(), os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if token.lower().startswith("bot"):
+        token = token[3:]
     if not token or not chat:
-        return
+        print("Telegram não configurado (faltam TELEGRAM_TOKEN e/ou TELEGRAM_CHAT_ID); alerta não enviado.")
+        return False
     data = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "HTML", "disable_web_page_preview": "true"}).encode()
     try:
         urllib.request.urlopen(f"https://api.telegram.org/bot{token}/sendMessage", data=data, timeout=20).read()
+        print("Alerta enviado no Telegram.")
+        return True
+    except urllib.error.HTTPError as e:
+        print(f"Falha ao enviar Telegram: HTTP {e.code} {e.read(300).decode('utf-8', 'replace')}")
     except Exception as e:  # noqa: BLE001
-        print(f"Falha ao enviar Telegram: {e}", file=sys.stderr)
+        print(f"Falha ao enviar Telegram: {e}")
+    return False
 
 
 def fmt_duration(seconds):
@@ -321,7 +329,7 @@ def main():
 
     now = dt.datetime.now(dt.timezone.utc)
     panel = os.environ.get("PANEL_URL", "").strip()
-    down_msgs, up_msgs = [], []
+    down_msgs, up_msgs, down_sites, up_sites = [], [], [], []
     for r in results:
         p = prev.get(r["url"], {})
         hist = (p.get("history") or [])[-(HISTORY_SIZE - 1):]
@@ -338,19 +346,22 @@ def main():
         label = f"<b>{html.escape(r['client'])}</b> ({r['env']})\n{html.escape(r['url'])}"
         if r["color"] == "red" and r["fail_streak"] >= FAILS_TO_ALERT and not r["alerted"]:
             down_msgs.append(f"🔴 {label}\nMotivo: {html.escape('; '.join(r['reasons']))}")
-            r["alerted"] = True
+            down_sites.append(r)
         elif r["color"] != "red" and r["alerted"]:
             since = p.get("down_since")
             dur = ""
             if since:
                 dur = f"\nFicou fora por ~{fmt_duration((now - dt.datetime.fromisoformat(since)).total_seconds())}"
             up_msgs.append(f"🟢 {label}\nVoltou a responder (HTTP {r.get('http')}, {r['ms']} ms){dur}")
-            r["alerted"] = False
+            up_sites.append(r)
 
-    if down_msgs:
-        telegram("⚠️ <b>Site(s) fora do ar</b>\n\n" + "\n\n".join(down_msgs) + (f"\n\nPainel: {panel}" if panel else ""))
-    if up_msgs:
-        telegram("✅ <b>Site(s) normalizado(s)</b>\n\n" + "\n\n".join(up_msgs) + (f"\n\nPainel: {panel}" if panel else ""))
+    # só marca como "avisado" se a mensagem realmente foi entregue; senão tenta de novo na próxima
+    if down_msgs and telegram("⚠️ <b>Site(s) fora do ar</b>\n\n" + "\n\n".join(down_msgs) + (f"\n\nPainel: {panel}" if panel else "")):
+        for r in down_sites:
+            r["alerted"] = True
+    if up_msgs and telegram("✅ <b>Site(s) normalizado(s)</b>\n\n" + "\n\n".join(up_msgs) + (f"\n\nPainel: {panel}" if panel else "")):
+        for r in up_sites:
+            r["alerted"] = False
 
     counts = {c: sum(r["color"] == c for r in results) for c in ("green", "yellow", "red")}
     out = {"generated_at": now.isoformat(timespec="seconds"), "counts": counts, "sites": results}
