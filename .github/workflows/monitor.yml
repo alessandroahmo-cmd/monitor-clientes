@@ -45,8 +45,6 @@ jobs:
         with:
           path: site
 
-      # Às vezes o GitHub ainda não "enxerga" o pacote recém-enviado.
-      # Por isso tentamos publicar até 3 vezes, esperando entre as tentativas.
       - id: deploy1
         continue-on-error: true
         uses: actions/deploy-pages@v4
